@@ -131,8 +131,8 @@ class Storage {
         virtual double getAvailablekW(double) {return 0;}
         virtual double getAcceptablekW(double) {return 0;}
         
-        virtual void commitCharge(int, double, double) {return;}
-        virtual double commitDischarge(int, double, double, double) {return 0;}
+        virtual double commitCharge(int, double, double) {return 0;}
+        virtual std::pair<double, double> commitDischarge(int, double, double, double) {return std::make_pair(0.0, 0.0);}
         
         void writeResults(std::string, std::vector<double>*, int, int = -1);
         

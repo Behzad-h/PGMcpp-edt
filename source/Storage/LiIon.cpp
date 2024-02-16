@@ -863,14 +863,14 @@ double LiIon :: getAcceptablekW(double dt_hrs)
 // ---------------------------------------------------------------------------------- //
 
 ///
-/// \fn void LiIon :: commitCharge(
+/// \fn double LiIon :: commitCharge(
 ///         int timestep,
 ///         double dt_hrs,
 ///         double charge_kW
 ///     )
 ///
 /// \brief Method which takes in the charging power for the current timestep and
-///     records.
+///     records. Returns the available energy in the battery.
 ///
 /// \param timestep The timestep (i.e., time series index) for the request.
 ///
@@ -878,13 +878,17 @@ double LiIon :: getAcceptablekW(double dt_hrs)
 ///
 /// \param charging_kW The charging power [kw] being sent to the asset.
 ///
+/// \return The available energy [kWh] remaining after charging the battery.
+///
 
-void LiIon :: commitCharge(
+double LiIon :: commitCharge(
     int timestep,
     double dt_hrs,
     double charging_kW
 )
 {
+    double charge_available_kWh = 0;
+
     //  1. record charging power
     this->charging_power_vec_kW[timestep] = charging_kW;
     
@@ -909,8 +913,11 @@ void LiIon :: commitCharge(
             this->operation_maintenance_cost_kWh;
     }
     
+    //  7. calculate the available charge of the battery considering the SoC min
+    charge_available_kWh = this->charge_vec_kWh[timestep] - this->min_SOC * this->energy_capacity_kWh;
+
     this->power_kW= 0;
-    return;
+    return charge_available_kWh;
 }   /* commitCharge() */
 
 // ---------------------------------------------------------------------------------- //
@@ -920,7 +927,7 @@ void LiIon :: commitCharge(
 // ---------------------------------------------------------------------------------- //
 
 ///
-/// \fn double LiIon :: commitDischarge(
+/// \fn std::pair<double, double> LiIon :: commitDischarge(
 ///         int timestep,
 ///         double dt_hrs,
 ///         double discharging_kW,
@@ -928,7 +935,7 @@ void LiIon :: commitCharge(
 ///     )
 ///
 /// \brief Method which takes in the discharging power for the current timestep and
-///     records. Returns the load remaining after discharge.
+///     records. Returns the load remaining after discharge and and the available energy in the battery.
 ///
 /// \param timestep The timestep (i.e., time series index) for the request.
 ///
@@ -938,16 +945,18 @@ void LiIon :: commitCharge(
 ///
 /// \param load_kW The load [kW] passed to the asset in this timestep.
 ///
-/// \return The load [kW] remaining after the discharge is deducted from it.
+/// \return The load [kW] remaining after the discharge is deducted from it and the available energy [kWh] in the battery for discharge.
 ///
 
-double LiIon :: commitDischarge(
+std::pair<double, double> LiIon :: commitDischarge(
     int timestep,
     double dt_hrs,
     double discharging_kW,
     double load_kW
 )
 {
+    double charge_available_kWh = 0;
+
     //  1. record discharging power, update total
     this->discharging_power_vec_kW[timestep] = discharging_kW;
     this->total_discharge_kWh += discharging_kW * dt_hrs;
@@ -975,9 +984,12 @@ double LiIon :: commitDischarge(
         this->operation_maintenance_cost_vec[timestep] = discharging_kW * dt_hrs *
             this->operation_maintenance_cost_kWh;
     }
+
+    //  8. calculate the available charge of the battery considering the SoC min
+    charge_available_kWh = this->charge_vec_kWh[timestep] - this->min_SOC * this->energy_capacity_kWh;
     
     this->power_kW = 0;
-    return load_kW;
+    return std::make_pair(load_kW, charge_available_kWh);
 }   /* commitDischarge() */
 
 // ---------------------------------------------------------------------------------- //

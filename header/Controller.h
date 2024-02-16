@@ -65,7 +65,7 @@ class Controller {
         void __computeNetLoad(ElectricalLoad*, std::vector<Renewable*>*, Resources*);
         void __constructCombustionMap(std::vector<Combustion*>*);
         
-        void __applyLoadFollowingControl_CHARGING(
+        void __applyLoadFollowingControl_ModeB(
             int,
             ElectricalLoad*,
             Resources*,
@@ -75,7 +75,7 @@ class Controller {
             std::vector<Storage*>*
         );
         
-        void __applyLoadFollowingControl_DISCHARGING(
+        void __applyLoadFollowingControl_ModeA(
             int,
             ElectricalLoad*,
             Resources*,
@@ -142,6 +142,8 @@ class Controller {
         );
         
         double __handleStorageDischarging(int, double, double, std::list<Storage*>);
+
+        double __maximumStorageDischargingPower(double, std::vector<Storage*>*);
         
         
     public:
@@ -151,7 +153,9 @@ class Controller {
         
         std::vector<double> net_load_vec_kW; ///< A vector of net load values [kW] at each point in the modelling time series. Net load is defined as load minus all available Renewable production.
         std::vector<double> missed_load_vec_kW; ///< A vector of missed load values [kW] at each point in the modelling time series.
-        
+        std::vector<double> renewable_production_all_vec_kW; ///< A vector of aggregated renewable production values [kW] at each point in the modelling time series.
+        double total_charge_available_kWh; ///< A variable for the energy available for discharge in all batteries
+
         std::map<double, std::vector<bool>> combustion_map; ///< A map of all possible combustion states, for use in determining optimal dispatch.
         
         

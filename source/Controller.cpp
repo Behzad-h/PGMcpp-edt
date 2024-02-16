@@ -58,19 +58,22 @@ void Controller :: __computeNetLoad(
     //  1. init
     this->net_load_vec_kW.resize(electrical_load_ptr->n_points, 0);
     this->missed_load_vec_kW.resize(electrical_load_ptr->n_points, 0);
+    this->renewable_production_all_vec_kW.resize(electrical_load_ptr->n_points, 0);
     
     //  2. populate net load vector
     double dt_hrs = 0;
     double load_kW = 0;
     double net_load_kW = 0;
     double production_kW = 0;
-    
+    double production_all_kW = 0;
+
     Renewable* renewable_ptr;
     
     for (int i = 0; i < electrical_load_ptr->n_points; i++) {
         dt_hrs = electrical_load_ptr->dt_vec_hrs[i];
         load_kW = electrical_load_ptr->load_vec_kW[i];
         net_load_kW = load_kW;
+        production_all_kW = 0;
         
         for (size_t j = 0; j < renewable_ptr_vec_ptr->size(); j++) {
             renewable_ptr = renewable_ptr_vec_ptr->at(j);
@@ -90,9 +93,11 @@ void Controller :: __computeNetLoad(
             );
         
             net_load_kW -= production_kW;
+            production_all_kW += production_kW;
         }
         
         this->net_load_vec_kW[i] = net_load_kW;
+        this->renewable_production_all_vec_kW[i] = production_all_kW;
     }
     
     return;
@@ -214,7 +219,7 @@ void Controller :: __constructCombustionMap(
 // ---------------------------------------------------------------------------------- //
 
 ///
-/// \fn void Controller :: __applyLoadFollowingControl_CHARGING(
+/// \fn void Controller :: __applyLoadFollowingControl_ModeB(
 ///         int timestep,
 ///         ElectricalLoad* electrical_load_ptr,
 ///         Resources* resources_ptr,
@@ -225,7 +230,7 @@ void Controller :: __constructCombustionMap(
 ///     )
 ///
 /// \brief Helper method to apply load following control action for given timestep of
-///     the Model run when net load <= 0;
+///     the Model run when in MODE B;
 ///
 /// \param timestep The current time step of the Model run.
 ///
@@ -243,7 +248,7 @@ void Controller :: __constructCombustionMap(
 /// \param storage_ptr_vec_ptr A pointer to the Storage pointer vector of the Model.
 ///
 
-void Controller :: __applyLoadFollowingControl_CHARGING(
+void Controller :: __applyLoadFollowingControl_ModeB(
     int timestep,
     ElectricalLoad* electrical_load_ptr,
     Resources* resources_ptr,
@@ -275,19 +280,61 @@ void Controller :: __applyLoadFollowingControl_CHARGING(
         resources_ptr
     );
     
-    //  4. attempt to charge all Storage assets using any and all available curtailment
-    //     charge priority is Combustion, then Renewable
-    this->__handleStorageCharging(
-        timestep,
-        dt_hrs,
-        storage_ptr_vec_ptr,
-        combustion_ptr_vec_ptr,
-        noncombustion_ptr_vec_ptr,
-        renewable_ptr_vec_ptr
-    );
+    //  4. partition Storage assets into depleted and non-depleted
+    std::list<Storage*> depleted_storage_ptr_list;
+    std::list<Storage*> nondepleted_storage_ptr_list;
+    
+    Storage* storage_ptr;
+    for (size_t i = 0; i < storage_ptr_vec_ptr->size(); i++) {
+        storage_ptr = storage_ptr_vec_ptr->at(i);
+        
+        if (storage_ptr->is_depleted) {
+            depleted_storage_ptr_list.push_back(storage_ptr);
+        }
+        
+        else {
+            nondepleted_storage_ptr_list.push_back(storage_ptr);
+        }
+    }
+
+
+    if (this->net_load_vec_kW[timestep] <= 0){
+        
+        //  5. attempt to charge all Storage assets using any and all available curtailment
+        //     charge priority is Combustion, then Renewable
+        this->__handleStorageCharging(
+            timestep,
+            dt_hrs,
+            storage_ptr_vec_ptr, //depleted_storage_ptr_list,
+            combustion_ptr_vec_ptr,
+            noncombustion_ptr_vec_ptr,
+            renewable_ptr_vec_ptr
+        );
+    }
+
+    else {
+        //  6. discharge non-depleted storage assets
+
+        //  6.1. get net load
+        double net_load_kW = this->net_load_vec_kW[timestep];
+    
+        //  6.2. discharge non-depleted storage assets
+        net_load_kW = this->__handleStorageDischarging(
+            timestep,
+            dt_hrs,
+            net_load_kW,
+            nondepleted_storage_ptr_list
+        );
+
+        //  6.3. record any missed load
+        if (net_load_kW > 1e-6) {
+            this->missed_load_vec_kW[timestep] = net_load_kW;
+        }
+
+    }
     
     return;
-}   /* __applyLoadFollowingControl_CHARGING() */
+}   /* __applyLoadFollowingControl_ModeB() */
 
 // ---------------------------------------------------------------------------------- //
 
@@ -296,7 +343,7 @@ void Controller :: __applyLoadFollowingControl_CHARGING(
 // ---------------------------------------------------------------------------------- //
 
 ///
-/// \fn void Controller :: __applyLoadFollowingControl_DISCHARGING(
+/// \fn void Controller :: __applyLoadFollowingControl_ModeA(
 ///         int timestep,
 ///         ElectricalLoad* electrical_load_ptr,
 ///         Resources* resources_ptr,
@@ -307,7 +354,7 @@ void Controller :: __applyLoadFollowingControl_CHARGING(
 ///     )
 ///
 /// \brief Helper method to apply load following control action for given timestep of
-///     the Model run when net load > 0;
+///     the Model run when in MODE A;
 ///
 /// \param timestep The current time step of the Model run.
 ///
@@ -325,7 +372,7 @@ void Controller :: __applyLoadFollowingControl_CHARGING(
 /// \param storage_ptr_vec_ptr A pointer to the Storage pointer vector of the Model.
 ///
 
-void Controller :: __applyLoadFollowingControl_DISCHARGING(
+void Controller :: __applyLoadFollowingControl_ModeA(
     int timestep,
     ElectricalLoad* electrical_load_ptr,
     Resources* resources_ptr,
@@ -357,12 +404,12 @@ void Controller :: __applyLoadFollowingControl_DISCHARGING(
     }
     
     //  3. discharge non-depleted storage assets
-    net_load_kW = this->__handleStorageDischarging(
-        timestep,
-        dt_hrs,
-        net_load_kW,
-        nondepleted_storage_ptr_list
-    );
+    //net_load_kW = this->__handleStorageDischarging(
+    //    timestep,
+    //    dt_hrs,
+    //    net_load_kW,
+    //    nondepleted_storage_ptr_list
+    //);
     
     //  4. request optimal production from all Noncombustion assets
     net_load_kW = this->__handleNoncombustionDispatch(
@@ -388,7 +435,7 @@ void Controller :: __applyLoadFollowingControl_DISCHARGING(
     this->__handleStorageCharging(
         timestep,
         dt_hrs,
-        depleted_storage_ptr_list,
+        storage_ptr_vec_ptr, //depleted_storage_ptr_list,
         combustion_ptr_vec_ptr,
         noncombustion_ptr_vec_ptr,
         renewable_ptr_vec_ptr
@@ -400,7 +447,7 @@ void Controller :: __applyLoadFollowingControl_DISCHARGING(
     }
     
     return;
-}   /* __applyLoadFollowingControl_DISCHARGING() */
+}   /* __applyLoadFollowingControl_ModeA() */
 
 // ---------------------------------------------------------------------------------- //
 
@@ -408,59 +455,6 @@ void Controller :: __applyLoadFollowingControl_DISCHARGING(
 
 // ---------------------------------------------------------------------------------- //
 
-///
-/// \fn void Controller :: __applyCycleChargingControl_CHARGING(
-///         int timestep,
-///         ElectricalLoad* electrical_load_ptr,
-///         Resources* resources_ptr,
-///         std::vector<Combustion*>* combustion_ptr_vec_ptr,
-///         std::vector<Noncombustion*>* noncombustion_ptr_vec_ptr,
-///         std::vector<Renewable*>* renewable_ptr_vec_ptr,
-///         std::vector<Storage*>* storage_ptr_vec_ptr
-///     )
-///
-/// \brief Helper method to apply cycle charging control action for given timestep of
-///     the Model run when net load <= 0. Simply defaults to load following control.
-///
-/// \param timestep The current time step of the Model run.
-///
-/// \param electrical_load_ptr A pointer to the ElectricalLoad component of the Model.
-///
-/// \param resources_ptr A pointer to the Resources component of the Model.
-///
-/// \param combustion_ptr_vec_ptr A pointer to the Combustion pointer vector of the Model.
-///
-/// \param noncombustion_ptr_vec_ptr A pointer to the Noncombustion pointer vector of
-///     the Model.
-///
-/// \param renewable_ptr_vec_ptr A pointer to the Renewable pointer vector of the Model.
-///
-/// \param storage_ptr_vec_ptr A pointer to the Storage pointer vector of the Model.
-///
-
-void Controller :: __applyCycleChargingControl_CHARGING(
-    int timestep,
-    ElectricalLoad* electrical_load_ptr,
-    Resources* resources_ptr,
-    std::vector<Combustion*>* combustion_ptr_vec_ptr,
-    std::vector<Noncombustion*>* noncombustion_ptr_vec_ptr,
-    std::vector<Renewable*>* renewable_ptr_vec_ptr,
-    std::vector<Storage*>* storage_ptr_vec_ptr
-)
-{
-    //  1. default to load following
-    this->__applyLoadFollowingControl_CHARGING(
-        timestep,
-        electrical_load_ptr,
-        resources_ptr,
-        combustion_ptr_vec_ptr,
-        noncombustion_ptr_vec_ptr,
-        renewable_ptr_vec_ptr,
-        storage_ptr_vec_ptr
-    );
-    
-    return;
-}   /* __applyCycleChargingControl_CHARGING() */
 
 // ---------------------------------------------------------------------------------- //
 
@@ -468,126 +462,6 @@ void Controller :: __applyCycleChargingControl_CHARGING(
 
 // ---------------------------------------------------------------------------------- //
 
-///
-/// \fn void Controller :: __applyCycleChargingControl_DISCHARGING(
-///         int timestep,
-///         ElectricalLoad* electrical_load_ptr,
-///         Resources* resources_ptr,
-///         std::vector<Combustion*>* combustion_ptr_vec_ptr,
-///         std::vector<Noncombustion*>* noncombustion_ptr_vec_ptr,
-///         std::vector<Renewable*>* renewable_ptr_vec_ptr,
-///         std::vector<Storage*>* storage_ptr_vec_ptr
-///     )
-///
-/// \brief Helper method to apply cycle charging control action for given timestep of
-///     the Model run when net load > 0. Defaults to load following control if no
-///     depleted storage assets.
-///
-/// \param timestep The current time step of the Model run.
-///
-/// \param electrical_load_ptr A pointer to the ElectricalLoad component of the Model.
-///
-/// \param resources_ptr A pointer to the Resources component of the Model.
-///
-/// \param combustion_ptr_vec_ptr A pointer to the Combustion pointer vector of the Model.
-///
-/// \param noncombustion_ptr_vec_ptr A pointer to the Noncombustion pointer vector of
-///     the Model.
-///
-/// \param renewable_ptr_vec_ptr A pointer to the Renewable pointer vector of the Model.
-///
-/// \param storage_ptr_vec_ptr A pointer to the Storage pointer vector of the Model.
-///
-
-void Controller :: __applyCycleChargingControl_DISCHARGING(
-    int timestep,
-    ElectricalLoad* electrical_load_ptr,
-    Resources* resources_ptr,
-    std::vector<Combustion*>* combustion_ptr_vec_ptr,
-    std::vector<Noncombustion*>* noncombustion_ptr_vec_ptr,
-    std::vector<Renewable*>* renewable_ptr_vec_ptr,
-    std::vector<Storage*>* storage_ptr_vec_ptr
-)
-{
-    //  1. get dt_hrs, net load
-    double dt_hrs = electrical_load_ptr->dt_vec_hrs[timestep];
-    double net_load_kW = this->net_load_vec_kW[timestep];
-    
-    //  2. partition Storage assets into depleted and non-depleted
-    std::list<Storage*> depleted_storage_ptr_list;
-    std::list<Storage*> nondepleted_storage_ptr_list;
-    
-    Storage* storage_ptr;
-    for (size_t i = 0; i < storage_ptr_vec_ptr->size(); i++) {
-        storage_ptr = storage_ptr_vec_ptr->at(i);
-        
-        if (storage_ptr->is_depleted) {
-            depleted_storage_ptr_list.push_back(storage_ptr);
-        }
-        
-        else {
-            nondepleted_storage_ptr_list.push_back(storage_ptr);
-        }
-    }
-    
-    //  3. discharge non-depleted storage assets
-    net_load_kW = this->__handleStorageDischarging(
-        timestep,
-        dt_hrs,
-        net_load_kW,
-        nondepleted_storage_ptr_list
-    );
-    
-    //  4. request optimal production from all Noncombustion assets
-    net_load_kW = this->__handleNoncombustionDispatch(
-        timestep,
-        dt_hrs,
-        net_load_kW,
-        noncombustion_ptr_vec_ptr,
-        resources_ptr
-    );
-    
-    //  5. request optimal production from all Combustion assets
-    //     default to load following if no depleted storage
-    if (depleted_storage_ptr_list.empty()) {
-        net_load_kW = this->__handleCombustionDispatch(
-            timestep,
-            dt_hrs,
-            net_load_kW,
-            combustion_ptr_vec_ptr,
-            false   // is_cycle_charging
-        );
-    }
-    
-    else {
-        net_load_kW = this->__handleCombustionDispatch(
-            timestep,
-            dt_hrs,
-            net_load_kW,
-            combustion_ptr_vec_ptr,
-            true    // is_cycle_charging
-        );
-    }
-    
-    //  6. attempt to charge depleted Storage assets using any and all available
-    ///    curtailment
-    //     charge priority is Combustion, then Renewable
-    this->__handleStorageCharging(
-        timestep,
-        dt_hrs,
-        depleted_storage_ptr_list,
-        combustion_ptr_vec_ptr,
-        noncombustion_ptr_vec_ptr,
-        renewable_ptr_vec_ptr
-    );
-    
-    //  7. record any missed load
-    if (net_load_kW > 1e-6) {
-        this->missed_load_vec_kW[timestep] = net_load_kW;
-    }
-    
-    return;
-}   /* __applyCycleChargingControl_DISCHARGING() */
 
 // ---------------------------------------------------------------------------------- //
 
@@ -633,6 +507,7 @@ void Controller :: __handleStorageCharging(
 {
     double acceptable_kW = 0;
     double curtailment_kW = 0;
+    double charge_available_kWh = 0;
     
     Storage* storage_ptr;
     Combustion* combustion_ptr;
@@ -708,12 +583,14 @@ void Controller :: __handleStorageCharging(
         }
         
         //  4. commit charge
-        storage_ptr->commitCharge(
+        charge_available_kWh += storage_ptr->commitCharge(
             timestep,
             dt_hrs,
             storage_ptr->power_kW
         );
     }
+
+    this->total_charge_available_kWh = charge_available_kWh;
     
     return;
 }   /* __handleStorageCharging() */
@@ -762,6 +639,7 @@ void Controller :: __handleStorageCharging(
 {
     double acceptable_kW = 0;
     double curtailment_kW = 0;
+    double charge_available_kWh = 0;
     
     Storage* storage_ptr;
     Combustion* combustion_ptr;
@@ -832,12 +710,14 @@ void Controller :: __handleStorageCharging(
         }
         
         //  4. commit charge
-        storage_ptr->commitCharge(
+        charge_available_kWh += storage_ptr->commitCharge(
             timestep,
             dt_hrs,
             storage_ptr->power_kW
         );
     }
+
+    this->total_charge_available_kWh = charge_available_kWh;
     
     return;
 }   /* __handleStorageCharging() */
@@ -1200,7 +1080,8 @@ double Controller :: __handleStorageDischarging(
 )
 {
     double discharging_kW = 0;
-    
+    double charge_available_kWh = 0;
+
     Storage* storage_ptr;
     
     std::list<Storage*>::iterator iter;
@@ -1217,16 +1098,61 @@ double Controller :: __handleStorageDischarging(
             discharging_kW = net_load_kW;
         }
         
-        net_load_kW = storage_ptr->commitDischarge(
+        std::pair<double, double> result = storage_ptr->commitDischarge(
             timestep,
             dt_hrs,
             discharging_kW,
             net_load_kW
         );
+        net_load_kW = result.first;
+        charge_available_kWh += result.second;
     }
+
+    this->total_charge_available_kWh = charge_available_kWh;
     
     return net_load_kW;
 }   /* __handleStorageDischarging() */
+
+
+// ---------------------------------------------------------------------------------- //
+
+///
+/// \fn double Controller :: __maximumStorageDischargingPower(
+///         double dt_hrs,
+///         std::vector<Storage*>* storage_ptr_vec_ptr,
+///     )
+///
+/// \brief Helper method to obtain the maximum discharging power of the given Storage 
+///     assets.
+///
+/// \param dt_hrs The interval of time [hrs] associated with the action.
+///
+/// \param storage_ptr_vec_ptr A pointer to a vector of pointers to the Storage assets.
+///
+/// \return The maximum discharging power [kW] of all Storage assets.
+///
+
+double Controller :: __maximumStorageDischargingPower(
+    double dt_hrs,
+    std::vector<Storage*>* storage_ptr_vec_ptr
+)
+{
+    double discharging_kW = 0;
+    double total_discharging_kW = 0;
+
+    Storage* storage_ptr;
+    
+    for (size_t j = 0; j < storage_ptr_vec_ptr->size(); j++) {
+        storage_ptr = storage_ptr_vec_ptr->at(j);
+        
+        discharging_kW = storage_ptr->getAvailablekW(dt_hrs);
+        
+        total_discharging_kW += discharging_kW;
+    }
+    
+    return total_discharging_kW;
+}   /* __maximumStorageDischargingPower() */
+
 
 // ---------------------------------------------------------------------------------- //
 
@@ -1379,11 +1305,40 @@ void Controller :: applyDispatchControl(
     std::vector<Storage*>* storage_ptr_vec_ptr
 )
 {
+    double total_discharging_kW = 0;
+    bool exit_modeA = false;
+    bool exit_modeB = true;
+
+    this->total_charge_available_kWh = 0;
     for (int i = 0; i < electrical_load_ptr->n_points; i++) {
         switch (this->control_mode) {
             case (ControlMode :: LOAD_FOLLOWING): {
-                if (this->net_load_vec_kW[i] <= 0) {
-                    this->__applyLoadFollowingControl_CHARGING(
+
+                double dt_hrs = electrical_load_ptr->dt_vec_hrs[i];
+                total_discharging_kW = this->__maximumStorageDischargingPower(
+                    dt_hrs,
+                    storage_ptr_vec_ptr
+                );
+
+                if (this->net_load_vec_kW[i] <= 1000 && 
+                    this->total_charge_available_kWh > 0.75*3000 &&
+                    total_discharging_kW * 0.8 >= electrical_load_ptr->load_vec_kW[i]) {
+                    // Mode B operation
+                    exit_modeA = true;
+                    exit_modeB = false;
+                }
+                if (this->total_charge_available_kWh <= 0.14*3000 ||
+                    total_discharging_kW * 0.9 <= electrical_load_ptr->load_vec_kW[i]) {
+                    // Mode A operation
+                    exit_modeA = false;
+                    exit_modeB = true;
+                }
+
+
+
+
+                if (exit_modeB == false){
+                    this->__applyLoadFollowingControl_ModeB(
                         i,
                         electrical_load_ptr,
                         resources_ptr,
@@ -1394,8 +1349,8 @@ void Controller :: applyDispatchControl(
                     );
                 }
                 
-                else {
-                    this->__applyLoadFollowingControl_DISCHARGING(
+                if (exit_modeA == false){
+                    this->__applyLoadFollowingControl_ModeA(
                         i,
                         electrical_load_ptr,
                         resources_ptr,
@@ -1409,33 +1364,7 @@ void Controller :: applyDispatchControl(
                 break;
             }
             
-            case (ControlMode :: CYCLE_CHARGING): {
-                if (this->net_load_vec_kW[i] <= 0) {
-                    this->__applyCycleChargingControl_CHARGING(
-                        i,
-                        electrical_load_ptr,
-                        resources_ptr,
-                        combustion_ptr_vec_ptr,
-                        noncombustion_ptr_vec_ptr,
-                        renewable_ptr_vec_ptr,
-                        storage_ptr_vec_ptr
-                    );
-                }
-                
-                else {
-                    this->__applyCycleChargingControl_DISCHARGING(
-                        i,
-                        electrical_load_ptr,
-                        resources_ptr,
-                        combustion_ptr_vec_ptr,
-                        noncombustion_ptr_vec_ptr,
-                        renewable_ptr_vec_ptr,
-                        storage_ptr_vec_ptr
-                    );
-                }
-                
-                break;
-            }
+            
             
             default: {
                 std::string error_str = "ERROR:  Controller :: applyDispatchControl():  ";
@@ -1473,6 +1402,7 @@ void Controller :: clear(void)
 {
     this->net_load_vec_kW.clear();
     this->missed_load_vec_kW.clear();
+    this->renewable_production_all_vec_kW.clear();
     this->combustion_map.clear();
     
     return;

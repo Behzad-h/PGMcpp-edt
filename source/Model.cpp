@@ -503,11 +503,13 @@ void Model :: __writeTimeSeries(std::string write_path, int max_lines)
             << this->renewable_ptr_vec[i]->type_str << " Dispatch [kW],";
     }
     
+    //////////////////////////////// Modified by Behzad /////////////////////////////////////////////////////
     for (size_t i = 0; i < this->storage_ptr_vec.size(); i++) {
         ofs << this->storage_ptr_vec[i]->power_capacity_kW << " kW "
             << this->storage_ptr_vec[i]->energy_capacity_kWh << " kWh "
-            << this->storage_ptr_vec[i]->type_str << " Discharge [kW],";
+            << this->storage_ptr_vec[i]->type_str << " Charge & Discharge [kW],";
     }
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////
     
     for (size_t i = 0; i < this->noncombustion_ptr_vec.size(); i++) {
         ofs << this->noncombustion_ptr_vec[i]->capacity_kW << " kW "
@@ -534,9 +536,11 @@ void Model :: __writeTimeSeries(std::string write_path, int max_lines)
             ofs << this->renewable_ptr_vec[j]->dispatch_vec_kW[i] << ",";
         }
         
+        //////////////////////////////// Modified by Behzad /////////////////////////////////////////////////////
         for (size_t j = 0; j < this->storage_ptr_vec.size(); j++) {
-            ofs << this->storage_ptr_vec[j]->discharging_power_vec_kW[i] << ",";
+            ofs << this->storage_ptr_vec[j]->charging_power_vec_kW[i] - this->storage_ptr_vec[j]->discharging_power_vec_kW[i] << ",";
         }
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////
         
         for (size_t j = 0; j < this->noncombustion_ptr_vec.size(); j++) {
             ofs << this->noncombustion_ptr_vec[j]->dispatch_vec_kW[i] << ",";

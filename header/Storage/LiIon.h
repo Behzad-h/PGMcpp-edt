@@ -129,8 +129,8 @@ class LiIon : public Storage {
         double getAvailablekW(double);
         double getAcceptablekW(double);
         
-        void commitCharge(int, double, double);
-        double commitDischarge(int, double, double, double);
+        double commitCharge(int, double, double);
+        std::pair<double, double> commitDischarge(int, double, double, double);
         
         ~LiIon(void);
         
